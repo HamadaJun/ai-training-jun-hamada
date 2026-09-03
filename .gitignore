@@ -1,0 +1,26 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Test outputs (受講者が生成するファイル)
+day09/result.json
+
+# Data (受講者が配置するファイル)
+day05/data/
