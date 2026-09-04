@@ -100,7 +100,40 @@ Hello, Taro
 **以下は受講者が記入してください**
 
 - 追加で確認した入力例：
+  python -m day01.app --name 11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
+  python -m day01.app --name "Ta ro"
+  python -m day01.app --name "Ta ro" --repeat 10
+  python -m day01.app --name "Ta ro" --repeat 11
+  python -m day01.app --name "Ta ro" --repeat 10 --format json
+  python -m day01.app --name Taro; $LASTEXITCODE
+  python -m day01.app --name; $LASTEXITCODE
+  python -m day01.app; $LASTEXITCODE
+
 - 発生したエラーと対処：
+  1.仮想環境有効化時に以下のメッセージが発生
+  ----
+    .venv\Scripts\activate : モジュール '.venv' を読み込むことができませんでした。詳細については、'Import-Module .venv' を実行してください。
+    発生場所 行:1 文字:1
++   .venv\Scripts\activate
++   ~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (.venv\Scripts\activate:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CouldNotAutoLoadModule
+  ----
+  →VSCodeを再起動しても直らなかったため、.venvディレクトリを削除し、作り直した
+
+  2.仮想環境有効化時に以下のメッセージが発生
+  ----
+  .venv/Scripts/activate : このシステムではスクリプトの実行が無効になっているため、ファイル  C:\Users\hamad\OneDrive\デスク
+  トップ\METATEAM\社内業務\AI研修\GitHubRepository\ai-training-jun-hamada\.venv\Scripts\Activate.ps1 を読み込むことができ
+  ません。詳細については、「about_Execution_Policies」(https://go.microsoft.com/fwlink/?LinkID=135170) を参照してください。
+  発生場所 行:1 文字:1
++   .venv/Scripts/activate
++   ~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : セキュリティ エラー: (: ) []、PSSecurityException
+    + FullyQualifiedErrorId : UnauthorizedAccess
+  ----
+  →以下のコマンドを実行することでPC内で作成したスクリプトについては実行許可を与えた。
+   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 
 ## 提出物
 
