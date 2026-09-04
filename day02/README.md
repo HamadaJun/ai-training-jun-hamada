@@ -133,9 +133,9 @@ python -m day02.app --prompt "短い俳句を作ってください" --temperatur
 
 ## Bedrock確認
 
-- モデル：
-- リージョン：
-- 主要パラメータ：
+- モデル：anthropic.claude-3-5-sonnet-20241022-v2:0
+- リージョン：ap-northeast-1
+- 主要パラメータ：region= model-id= temperature=0.2 max-tokens=512 timeout-sec=30
 
 ## リサーチメモ（任意）
 

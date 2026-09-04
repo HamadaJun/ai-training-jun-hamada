@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
-from typing import List, Optional
+
+from typing import Any, List, Optional
 
 from dotenv import load_dotenv
-
 
 def build_parser() -> argparse.ArgumentParser:
     """Day02のCLI引数を定義します（READMEの機能要件に対応）。"""
@@ -33,6 +34,52 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--timeout-sec must be a positive integer")
 
 
+def _extract_bedrock_text(payload: Any) -> str:
+    """Bedrock APIのレスポンスから本文テキストを抽出します。"""
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unexpected Bedrock response body: {type(payload).__name__}")
+
+    if "content" in payload and isinstance(payload["content"], list):
+        texts: List[str] = []
+        for item in payload["content"]:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                texts.append(text)
+        if texts:
+            return "".join(texts).strip()
+
+    output = payload.get("output")
+    if isinstance(output, dict):
+        message = output.get("message", {})
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                texts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str) and text:
+                            texts.append(text)
+                if texts:
+                    return "".join(texts).strip()
+
+    completion = payload.get("completion")
+    if isinstance(completion, str) and completion:
+        return completion.strip()
+
+    for key in ("answer", "text", "outputText"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value.strip()
+
+    raise ValueError(
+        "Unexpected Bedrock response format: "
+        f"keys={sorted(payload.keys())[:10]}"
+    )
+
+
 def invoke_bedrock(
     *,
     prompt: str,
@@ -42,23 +89,109 @@ def invoke_bedrock(
     max_tokens: int,
     timeout_sec: int,
 ) -> str:
-    """Bedrockを呼び出して回答本文（文字列）を返します。
+    """Bedrockを呼び出して回答本文（文字列）を返します。"""
+    if not prompt or not prompt.strip():
+        raise ValueError("prompt is required and cannot be empty")
 
-    この関数を実装すると、`python -m day02.app ...` が動くようになります。
+    if not region:
+        raise ValueError("region is required")
+    if not model_id:
+        raise ValueError("model-id is required")
+    if not (0.0 <= temperature <= 1.0):
+        raise ValueError("temperature must be between 0.0 and 1.0")
+    if max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
+    if timeout_sec <= 0:
+        raise ValueError("timeout_sec must be a positive integer")
 
-    実装ガイド：
-    - boto3のBedrock Runtimeクライアントを作る（リージョンは `region` を使う）
-    - `model_id` で指定されたモデルを呼び出す
-    - `temperature` / `max_tokens` をリクエストに反映する
-    - `timeout_sec` はHTTPクライアント設定やタイムアウト制御に反映する
-    - 返すのは「回答本文のみ」（前後に装飾文を混ぜない）
+    try:
+        import boto3
+        from botocore.config import Config
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "boto3 is required. Install it with: pip install boto3"
+        ) from exc
 
-    エラー時：
-    - 認証/権限/ネットワーク/タイムアウトなどは例外として投げてOK
-     （main側で終了コード=1にしてstderrへ出ます）
-    """
-    # TODO(TRAINEE): Implement Bedrock invocation and return the assistant text only.
-    raise NotImplementedError("Implement Bedrock invocation")
+    try:
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            config=Config(
+                connect_timeout=timeout_sec,
+                read_timeout=timeout_sec,
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
+        )
+    except Exception as exc:  # pragma: no cover - boto3 setup failure path
+        raise RuntimeError(
+            f"Failed to initialize Bedrock client for region={region}: {exc}"
+        ) from exc
+
+    if "anthropic.claude" in model_id:
+        payload = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": prompt}]}
+            ],
+        }
+    else:
+        payload = {
+            "inputText": prompt,
+            "textGenerationConfig": {
+                "maxTokenCount": max_tokens,
+                "temperature": temperature,
+                "stopSequences": [],
+            },
+        }
+
+    try:
+        response = client.invoke_model(
+            modelId=model_id,
+            body=json.dumps(payload).encode("utf-8"),
+            accept="application/json",
+            contentType="application/json",
+        )
+    except Exception as exc:
+        message = str(exc)
+        lower = message.lower()
+        if "access denied" in lower or "not authorized" in lower or "unauthorized" in lower:
+            raise PermissionError(
+                f"AWS permission failed while calling Bedrock: {message}"
+            ) from exc
+        if "timed out" in lower or "timeout" in lower:
+            raise TimeoutError(
+                f"Bedrock request timed out after {timeout_sec}s: {message}"
+            ) from exc
+        if "unable to locate credentials" in lower or "credential" in lower:
+            raise PermissionError(f"AWS authentication failed: {message}") from exc
+        if "network" in lower or "connection" in lower or "temporary" in lower:
+            raise ConnectionError(f"Bedrock network error: {message}") from exc
+        raise RuntimeError(f"Bedrock invocation failed: {message}") from exc
+
+    try:
+        body = response.get("body")
+        if body is None:
+            raise ValueError("Bedrock response has no body")
+        if hasattr(body, "read"):
+            response_body = json.loads(body.read())
+        else:
+            response_body = json.loads(body)
+    except Exception as exc:  # pragma: no cover - response parsing failure path
+        raise ValueError(f"Failed to parse Bedrock response body: {exc}") from exc
+
+    try:
+        text = _extract_bedrock_text(response_body)
+    except ValueError as exc:
+        raise ValueError(
+            f"Bedrock returned an unexpected response format for model={model_id}: {exc}"
+        ) from exc
+
+    if not text:
+        raise ValueError("Bedrock returned an empty response body")
+
+    return text
 
 
 def main(argv: List[str] | None = None) -> int:
