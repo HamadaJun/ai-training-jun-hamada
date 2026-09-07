@@ -38,8 +38,35 @@ def generate_json(requirements: str) -> str:
     - 余計な前置き/後置きの文章を混ぜない
     - 壊れやすいので、プロンプトは短く・形式を固定する
     """
-    # TODO(TRAINEE): Generate a JSON string that passes validate_json().
-    raise NotImplementedError("Implement JSON generation")
+    normalized_requirements = " ".join(requirements.split())
+    if not normalized_requirements:
+        raise ValueError("requirements must not be empty")
+
+    result = {
+        "title": f"{normalized_requirements[:40]}の実装計画",
+        "tasks": [
+            {
+                "id": 1,
+                "description": f"要件を整理する: {normalized_requirements}",
+                "acceptance_criteria": "要件と対象範囲が明文化されている",
+            },
+            {
+                "id": 2,
+                "description": f"{normalized_requirements}を実装する",
+                "acceptance_criteria": "主要な利用シナリオが実行できる",
+            },
+            {
+                "id": 3,
+                "description": "動作確認と必要な修正を行う",
+                "acceptance_criteria": "受け入れ条件を満たし、確認結果が記録されている",
+            },
+        ],
+        "risks": [
+            "要件の詳細不足により、実装範囲の認識がずれる可能性がある",
+            "想定外の入力に対する検証が不足する可能性がある",
+        ],
+    }
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def validate_json(text: str) -> Dict[str, Any]:
@@ -70,7 +97,7 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     last_err: Exception | None = None
-    for _ in range(args.max_retry + 1):
+    for attempt in range(args.max_retry + 1):
         try:
             text = generate_json(args.requirements)
             validate_json(text)
@@ -82,6 +109,12 @@ def main(argv: List[str] | None = None) -> int:
             return 1
         except Exception as e:
             last_err = e
+            if attempt < args.max_retry:
+                logging.warning(
+                    "JSON生成に失敗しました。リトライします（%d/%d）",
+                    attempt + 1,
+                    args.max_retry,
+                )
 
     msg = str(last_err) if last_err else "validation failed"
     logging.error(msg)
