@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
+import re
 import sys
-from typing import List
+from typing import List, Tuple
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _validate_args(args: argparse.Namespace) -> None:
     """引数の簡易バリデーションを行います（入力不備は exit code=2）。"""
-    if not args.question:
+    if not args.question or not args.question.strip():
         raise ValueError("--question is required")
 
 
@@ -35,8 +37,45 @@ def answer_with_rag(question: str) -> str:
     - 最初は単純なキーワード検索でもOK（高品質でなくてよい）
     - ヒットがない場合の挙動を必ず実装する
     """
-    # TODO(TRAINEE): Implement retrieval from day05/data and return Answer/Sources formatted text.
-    raise NotImplementedError("Implement RAG")
+    normalized_question = " ".join(question.split())
+    if not normalized_question:
+        raise ValueError("question must not be empty")
+
+    data_dir = Path(__file__).parent / "data"
+    documents = sorted(data_dir.glob("*.txt"))
+    if not documents:
+        raise FileNotFoundError(f"no .txt documents found in {data_dir}")
+
+    question_terms = {
+        term.casefold()
+        for term in re.findall(r"[A-Za-z0-9_]+|[ぁ-んァ-ン一-龯]{2,}", normalized_question)
+    }
+    matches: List[Tuple[Path, str, int]] = []
+    for document in documents:
+        content = document.read_text(encoding="utf-8")
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            excerpt = line.strip()
+            if not excerpt:
+                continue
+            score = sum(term in excerpt.casefold() for term in question_terms)
+            if score:
+                matches.append((document, excerpt, score))
+
+    matches.sort(key=lambda item: item[2], reverse=True)
+    if not matches:
+        return (
+            "Answer: 該当する根拠が見つかりませんでした。\n"
+            "Sources:\n"
+            "- (none)"
+        )
+
+    selected = matches[:3]
+    answer = selected[0][1]
+    source_lines = [
+        f'- day05/data/{document.name} (excerpt: "{excerpt}")'
+        for document, excerpt, _ in selected
+    ]
+    return "Answer: " + answer + "\nSources:\n" + "\n".join(source_lines)
 
 
 def main(argv: List[str] | None = None) -> int:
