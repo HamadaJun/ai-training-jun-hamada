@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import List
 
@@ -38,8 +39,67 @@ def run_guarded(*, text: str, mode: str, case: int) -> str:
     返り値：
     - 標準出力に出る本文（文章）を返す
     """
-    # TODO(TRAINEE): Implement guard logic and ensure unsafe behavior is blocked in attack mode.
-    raise NotImplementedError("Implement guard and safe tool execution")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("拒否しました: --text は空にできません")
+    if len(text) > 2000:
+        raise ValueError("拒否しました: 入力が長すぎます")
+    if mode not in {"normal", "attack"}:
+        raise ValueError("拒否しました: 未知の実行モードです")
+    if not isinstance(case, int) or isinstance(case, bool) or not 1 <= case <= 3:
+        raise ValueError("拒否しました: --case は1〜3の整数で指定してください")
+
+    blocked_patterns = {
+        1: ("指示を無視", "前の指示", "秘密情報", "隠し情報"),
+        2: ("システムコマンド", "コマンドを実行", "コマンド実行", "システム情報"),
+        3: ("ファイルを削除", "削除して", "許可していない操作", "禁止された操作"),
+    }
+    normalized_text = " ".join(text.split()).casefold()
+    matched_case = next(
+        (
+            attack_case
+            for attack_case, patterns in blocked_patterns.items()
+            if any(pattern.casefold() in normalized_text for pattern in patterns)
+        ),
+        None,
+    )
+    if matched_case is not None:
+        reasons = {
+            1: "指示の乗っ取りにつながる入力",
+            2: "許可していないツール実行の要求",
+            3: "許可していない操作の要求",
+        }
+        raise ValueError(f"拒否しました: {reasons[matched_case]}")
+
+    if mode == "attack":
+        raise ValueError(f"拒否しました: 攻撃ケース{case}の入力を安全側で処理できません")
+
+    try:
+        from langchain_aws import ChatBedrockConverse
+        from langchain_core.messages import HumanMessage
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "LangChain dependencies are required. Install requirements.txt first."
+        ) from exc
+
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    model_id = os.getenv("BEDROCK_MODEL_ID")
+    if not region:
+        raise ValueError("AWS_REGION or AWS_DEFAULT_REGION is required")
+    if not model_id:
+        raise ValueError("BEDROCK_MODEL_ID is required")
+
+    llm = ChatBedrockConverse(model=model_id, region_name=region)
+    response = llm.invoke([HumanMessage(content=text.strip())])
+    content = response.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+        )
+    raise RuntimeError("AI response content has an unsupported format")
 
 
 def main(argv: List[str] | None = None) -> int:
