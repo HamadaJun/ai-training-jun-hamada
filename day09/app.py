@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import locale
 import os
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List
@@ -38,8 +40,28 @@ def load_suite(path: str) -> List[Dict[str, Any]]:
     - `path` を開いて読み、ケース配列（list[dict]）にして返す
     - ケースは最低 `id` と `input` を含む想定
     """
-    # TODO(TRAINEE): Load JSON suite from `path` and return list of dict cases.
-    raise NotImplementedError("Implement loading test suite")
+    if not os.path.isfile(path):
+        raise ValueError(f"suite file not found: {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            suite = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid suite JSON: {exc.msg}") from exc
+    except OSError as exc:
+        raise ValueError(f"cannot read suite file: {path}") from exc
+
+    if not isinstance(suite, list):
+        raise ValueError("suite must be a JSON array")
+    validated: List[Dict[str, Any]] = []
+    for index, case in enumerate(suite, start=1):
+        if not isinstance(case, dict):
+            raise ValueError(f"suite case {index} must be an object")
+        if not isinstance(case.get("id"), str) or not case["id"].strip():
+            raise ValueError(f"suite case {index} requires a non-empty id")
+        if not isinstance(case.get("input"), str):
+            raise ValueError(f"suite case {case['id']} requires string input")
+        validated.append(case)
+    return validated
 
 
 def run_case(case: Dict[str, Any], timeout_sec: int) -> Dict[str, Any]:
@@ -57,8 +79,102 @@ def run_case(case: Dict[str, Any], timeout_sec: int) -> Dict[str, Any]:
     注意：
     - `timeout_sec` を使って、長時間実行にならないようにしてください
     """
-    # TODO(TRAINEE): Execute the target function/app for this case and return result dict.
-    raise NotImplementedError("Implement running a single case")
+    case_id = case["id"]
+    input_text = case["input"]
+    target_module = case.get("target", "day08")
+    if target_module not in {"day05", "day08", "day09", "day09_safety"}:
+        return {
+            "id": case_id,
+            "passed": False,
+            "reason": f"unsupported target: {target_module}",
+        }
+    if target_module == "day09_safety":
+        command = [sys.executable, "-m", "day09.safety", "--text", input_text]
+    elif target_module == "day09":
+        command = [sys.executable, "-m", "day09.rag", "--question", input_text]
+    elif target_module == "day05":
+        command = [sys.executable, "-m", "day05.app", "--question", input_text]
+    else:
+        command = [
+            sys.executable,
+            "-m",
+            "day08.app",
+            "--text",
+            input_text,
+            "--max-steps",
+            "50",
+            "--max-retry",
+            "1",
+        ]
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding=locale.getpreferredencoding(False),
+            timeout=timeout_sec,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "id": case_id,
+            "passed": False,
+            "reason": f"timeout after {timeout_sec} seconds",
+        }
+
+    output = completed.stdout.strip()
+    error = completed.stderr.strip()
+    expected_returncode = case.get("expected_returncode")
+    if expected_returncode is not None:
+        passed = completed.returncode == expected_returncode
+        return {
+            "id": case_id,
+            "passed": passed,
+            "reason": (
+                f"expected exit code {expected_returncode}"
+                if passed
+                else f"expected exit code {expected_returncode}, got {completed.returncode}"
+            ),
+            "output": output or error,
+        }
+    if target_module == "day09_safety":
+        if completed.returncode != 0 and "拒否しました" in error:
+            return {
+                "id": case_id,
+                "passed": True,
+                "reason": "unsafe input was rejected as expected",
+                "output": error,
+            }
+        return {
+            "id": case_id,
+            "passed": False,
+            "reason": "unsafe input was not rejected",
+            "output": output or error,
+        }
+    if target_module == "day05" and completed.returncode == 0:
+        required_sections = ("Answer:", "Sources:")
+        if not all(section in output for section in required_sections):
+            return {
+                "id": case_id,
+                "passed": False,
+                "reason": "Day05 RAG output must include Answer: and Sources:",
+                "output": output,
+            }
+    if completed.returncode == 0 and output:
+        return {
+            "id": case_id,
+            "passed": True,
+            "reason": "completed successfully",
+            "output": output,
+        }
+    return {
+        "id": case_id,
+        "passed": False,
+        "reason": error or f"target exited with code {completed.returncode}",
+        "output": output,
+    }
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -79,6 +195,12 @@ def main(argv: List[str] | None = None) -> int:
 
     try:
         suite = load_suite(args.suite)
+    except Exception as e:
+        logging.error(str(e))
+        print(str(e), file=sys.stderr)
+        return 2
+
+    try:
         results: List[Dict[str, Any]] = []
         ok = 0
         ng = 0
