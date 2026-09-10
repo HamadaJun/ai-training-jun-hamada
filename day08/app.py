@@ -3,7 +3,17 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from typing import List
+from typing import List, Literal, TypedDict
+
+
+class GraphState(TypedDict, total=False):
+    input: str
+    status: str
+    output: str
+    errors: List[str]
+    steps: int
+    retries: int
+    failure_kind: str
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,8 +45,101 @@ def run_graph(*, text: str, max_steps: int, max_retry: int) -> str:
     - `max_steps` / `max_retry` を上限として必ず反映し、無限ループを防ぐ
     - 上限到達時は明示的に失敗（例外）してよい（mainがexit code=1にする）
     """
-    # TODO(TRAINEE): Add retry/fallback logic and enforce max_steps/max_retry.
-    raise NotImplementedError("Implement retry/fallback flow")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("--text is required")
+    if not 1 <= max_steps <= 50:
+        raise ValueError("--max-steps must be between 1 and 50")
+    if not 0 <= max_retry <= 5:
+        raise ValueError("--max-retry must be between 0 and 5")
+
+    try:
+        from langgraph.graph import END, START, StateGraph
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "LangGraph is required. Install requirements.txt first."
+        ) from exc
+
+    def attempt(state: GraphState) -> GraphState:
+        steps = state.get("steps", 0) + 1
+        if steps > max_steps:
+            raise RuntimeError(f"最大ステップ数に到達しました: {max_steps}")
+
+        value = state["input"].casefold()
+        errors = state.get("errors", [])
+        if "不完全なjson" in value:
+            error = f"JSONパース失敗 (retry={state.get('retries', 0)})"
+            logging.warning("step=%s failure=json_parse", steps)
+            if state.get("retries", 0) < max_retry:
+                return {
+                    "status": "retry",
+                    "failure_kind": "json_parse",
+                    "steps": steps,
+                    "retries": state.get("retries", 0) + 1,
+                    "errors": errors + [error],
+                }
+            return {
+                "status": "fallback",
+                "failure_kind": "json_parse",
+                "steps": steps,
+                "errors": errors + [error],
+            }
+
+        if "存在しない情報" in value or "検索ヒットなし" in value:
+            logging.warning("step=%s failure=search_no_hit", steps)
+            return {
+                "status": "fallback",
+                "failure_kind": "search_no_hit",
+                "steps": steps,
+                "errors": errors + ["検索結果なし"],
+            }
+
+        logging.info("step=%s status=success", steps)
+        return {
+            "status": "success",
+            "steps": steps,
+            "output": f"処理が完了しました: {state['input']}",
+        }
+
+    def retry(state: GraphState) -> GraphState:
+        logging.info(
+            "retry=%s/%s failure=%s",
+            state.get("retries", 0),
+            max_retry,
+            state.get("failure_kind", "unknown"),
+        )
+        return {}
+
+    def fallback(state: GraphState) -> GraphState:
+        if state.get("failure_kind") == "json_parse":
+            output = "JSONを解釈できなかったため、簡易形式で処理しました。"
+        else:
+            output = "検索結果が見つかりませんでした。別のキーワードを指定してください。"
+        logging.info("fallback failure=%s", state.get("failure_kind", "unknown"))
+        return {"output": output}
+
+    def route(state: GraphState) -> Literal["retry", "fallback", "success"]:
+        return state.get("status", "fallback")  # type: ignore[return-value]
+
+    graph = StateGraph(GraphState)
+    graph.add_node("attempt", attempt)
+    graph.add_node("retry", retry)
+    graph.add_node("fallback", fallback)
+    graph.add_edge(START, "attempt")
+    graph.add_conditional_edges(
+        "attempt",
+        route,
+        {"retry": "retry", "fallback": "fallback", "success": END},
+    )
+    graph.add_edge("retry", "attempt")
+    graph.add_edge("fallback", END)
+
+    result = graph.compile().invoke(
+        {"input": text.strip(), "errors": [], "steps": 0, "retries": 0}
+    )
+    output = result.get("output")
+    if not isinstance(output, str):
+        raise RuntimeError("処理結果を生成できませんでした")
+    return output
 
 
 def main(argv: List[str] | None = None) -> int:
